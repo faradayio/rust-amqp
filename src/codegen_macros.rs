@@ -4,7 +4,7 @@ use std::io::{self, Cursor, Read, Write};
 
 use table::{Table, decode_table, encode_table};
 use amqp_error::{AMQPError, AMQPResult};
-use framing::{FrameType, Frame, MethodFrame};
+use framing::{FrameType, Frame, MethodFrame, ContentHeaderFrame};
 use protocol;
 
 #[derive(Debug)]
@@ -16,7 +16,7 @@ pub struct ArgumentsReader<'data> {
 }
 
 impl <'data> ArgumentsReader<'data> {
-    pub fn new(data: &'data [u8]) -> Self {
+    pub fn new(data: &'data [u8]) -> ArgumentsReader {
         Self { cursor: Cursor::new(data), bits: BitVec::from_bytes(&[0]), byte: 0, current_bit: 0 }
     }
 
@@ -192,11 +192,11 @@ macro_rules! write_type {
 }
 
 macro_rules! method_struct {
-    ($method_name:ident, $method_str:expr, $method_id:expr, $class_id:expr, ) => (
+    ($method_name:ident, $method_str:expr, $class_id:expr, $method_id:expr, ) => (
         #[derive(Debug)]
         pub struct $method_name;
         impl protocol::Method for $method_name {
-            fn decode(method_frame: MethodFrame) -> AMQPResult<Self> where Self: Sized {
+            fn decode(_method_frame: MethodFrame) -> AMQPResult<Self> where Self: Sized {
                 Ok($method_name)
             }
 
@@ -217,7 +217,7 @@ macro_rules! method_struct {
             }
         }
     );
-    ($method_name:ident, $method_str:expr, $method_id:expr, $class_id:expr, $($arg_name:ident => $ty:ident),+) => (
+    ($method_name:ident, $method_str:expr, $class_id:expr, $method_id:expr, $($arg_name:ident => $ty:ident),+) => (
         #[derive(Debug)]
         pub struct $method_name {
             $(pub $arg_name: map_type!($ty),)*
@@ -225,6 +225,7 @@ macro_rules! method_struct {
 
         impl protocol::Method for $method_name {
             fn decode(method_frame: MethodFrame) -> AMQPResult<Self> where Self: Sized {
+                debug!("Decoding {}", $method_str);
                 let mut reader = ArgumentsReader::new(&method_frame.arguments);
                 Ok($method_name {
                     $($arg_name: read_type!(reader, $ty)?,)*
@@ -252,6 +253,53 @@ macro_rules! method_struct {
     )
 }
 
+macro_rules! properties_struct {
+    ($struct_name:ident, $($arg_name:ident => $ty:ident),+) => (
+        #[derive(Debug, Default, Clone)]
+        pub struct $struct_name {
+            $(pub $arg_name: Option<map_type!($ty)>,)*
+        }
+
+        impl $struct_name {
+            pub fn decode(content_header_frame: ContentHeaderFrame) -> AMQPResult<$struct_name> {
+                let mut reader = ArgumentsReader::new(&content_header_frame.properties);
+                let properties_flags = BitVec::from_bytes(&[((content_header_frame.properties_flags >> 8) & 0xff) as u8,
+                    (content_header_frame.properties_flags & 0xff) as u8]);
+                let mut idx = 0;
+                Ok($struct_name {
+                    $($arg_name: {
+                        idx = idx +1;
+                        match properties_flags.get(idx - 1) {
+                            Some(flag) if flag => Some(read_type!(reader, $ty)?),
+                            Some(_) => None,
+                            None => return Err(AMQPError::Protocol("Properties flags are not correct".to_owned()))
+                        }
+                    },)*
+                })
+            }
+
+            pub fn encode(self) -> AMQPResult<Vec<u8>> {
+                let mut writer = ArgumentsWriter::new();
+                $(if let Some(prop) = self.$arg_name {
+                        write_type!(writer, $ty, &prop)?;
+                };)*
+                Ok(writer.as_bytes())
+            }
+
+            pub fn flags(&self) -> u16 {
+                let mut bits = BitVec::from_elem(16, false);
+                let mut idx = 0;
+                $(
+                    bits.set(idx, self.$arg_name.is_some());
+                    idx = idx + 1;
+                )*
+                let flags : u16 = bits.to_bytes()[0] as u16;
+                (flags << 8 | bits.to_bytes()[1] as u16) as u16
+            }
+        }
+    );
+}
+
 #[cfg(test)]
 mod test {
     use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
@@ -260,12 +308,14 @@ mod test {
 
     use table::{Table, decode_table, encode_table};
     use amqp_error::{AMQPError, AMQPResult};
-    use framing::{FrameType, Frame, MethodFrame};
+    use framing::{FrameType, Frame, MethodFrame, ContentHeaderFrame};
     use protocol;
     use super::*;
 
     method_struct!(Foo, "test.foo", 1, 2, a => octet, b => shortstr, c => longstr, d => bit, e => bit, f => long);
     method_struct!(FooNoFields, "test.foo_no_fields", 1, 2, );
+
+    properties_struct!(Test, a => octet, b => shortstr, c => longstr, d => bit, e => bit, f => long);
 
     #[test]
     fn test_foo(){
