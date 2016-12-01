@@ -86,7 +86,7 @@ extern crate byteorder;
 extern crate bit_vec;
 
 #[cfg(feature = "tls")]
-extern crate openssl;
+extern crate native_tls;
 
 #[macro_use]
 extern crate log;

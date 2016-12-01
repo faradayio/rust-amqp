@@ -3,7 +3,7 @@ use std::{io, error, fmt};
 use url;
 
 #[cfg(feature = "tls")]
-use openssl;
+use native_tls;
 
 #[derive(Debug, Clone)]
 pub enum AMQPError {
@@ -61,8 +61,15 @@ impl From<url::ParseError> for AMQPError {
 }
 
 #[cfg(feature = "tls")]
-impl From<openssl::ssl::error::SslError> for AMQPError {
-    fn from(err: openssl::ssl::error::SslError) -> AMQPError {
+impl From<native_tls::Error> for AMQPError {
+    fn from(err: native_tls::Error) -> AMQPError {
+        AMQPError::Protocol(format!("{}", err))
+    }
+}
+
+#[cfg(feature = "tls")]
+impl<S: fmt::Debug + 'static> From<native_tls::HandshakeError<S>> for AMQPError {
+    fn from(err: native_tls::HandshakeError<S>) -> AMQPError {
         AMQPError::Protocol(format!("{}", err))
     }
 }
