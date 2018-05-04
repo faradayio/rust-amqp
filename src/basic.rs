@@ -84,10 +84,10 @@ impl<'a> Iterator for GetIterator<'a> {
         };
         match method_frame.method_name() {
             "basic.get-ok" => {
-                let reply: basic::GetOk = Method::decode(method_frame).ok().unwrap();
-                let headers = self.channel.read_headers().ok().unwrap();
-                let body = self.channel.read_body(headers.body_size).ok().unwrap();
-                let properties = BasicProperties::decode(headers).ok().unwrap();
+                let reply: basic::GetOk = Method::decode(method_frame).unwrap();
+                let headers = self.channel.read_headers().unwrap();
+                let body = self.channel.read_body(headers.body_size).unwrap();
+                let properties = BasicProperties::decode(headers).unwrap();
                 Some(GetResult {
                     headers: properties,
                     reply: reply,
