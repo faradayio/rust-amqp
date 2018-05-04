@@ -246,9 +246,14 @@ impl Channel {
     // call consumers.
     pub fn start_consuming(&mut self) {
         loop {
-            if let Err(err) = self.read() {
-                error!("Error consuming {:?}", err);
-                return;
+            match self.read() {
+                Err(err) => {
+                    error!("Error consuming {:?}", err);
+                    return;
+                }
+                Ok(frame) => {
+                    debug!("Discarding frame {:?}", frame);
+                }
             }
         }
     }
@@ -285,6 +290,7 @@ impl Channel {
                 }
             }
             _ => {
+                debug!("Passing on unknown frame {:?}", frame);
                 // Pass on all other types of frames
                 Ok(Some(frame))
             }
