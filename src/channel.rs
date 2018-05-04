@@ -273,6 +273,7 @@ impl Channel {
                         let cons = conss.get_mut(&deliver_method.consumer_tag);
                         match cons {
                             Some(mut consumer) => {
+                                trace!("Handling delivery: {:?} {:?}", deliver_method, properties);
                                 consumer.handle_delivery(self, deliver_method, properties, body);
                                 Ok(None)
                             }
