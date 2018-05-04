@@ -12,6 +12,7 @@ use protocol::basic::{Consume, ConsumeOk, Deliver, Publish, Ack, Nack, Reject, Q
 use connection::Connection;
 use std::collections::HashMap;
 use std::cell::RefCell;
+use std::fmt::Debug;
 use std::rc::Rc;
 use amq_proto::Method;
 
@@ -109,12 +110,17 @@ impl Channel {
     // Send method frame, receive method frame, try to return expected method frame
     // or return error.
     pub fn rpc<I, O>(&mut self, method: &I, expected_reply: &str) -> AMQPResult<O>
-        where I: Method,
-              O: Method
+        where I: Method + Debug,
+              O: Method + Debug,
     {
+        trace!("RPC call: {:?}", method);
         let method_frame = try!(self.raw_rpc(method));
         match method_frame.method_name() {
-            m_name if m_name == expected_reply => Method::decode(method_frame).map_err(From::from),
+            m_name if m_name == expected_reply => {
+                let reply = Method::decode(method_frame).map_err(From::from);
+                trace!("RPC reply: {:?}", reply);
+                reply
+            }
             m_name => {
                 Err(AMQPError::Protocol(format!("Unexpected method frame: {}, expected: {}",
                                                 m_name,
