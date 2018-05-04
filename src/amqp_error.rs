@@ -1,6 +1,7 @@
 use std::convert::From;
 use std::{io, error, fmt};
 use url;
+use amq_proto;
 
 #[cfg(feature = "tls")]
 use native_tls;
@@ -49,7 +50,7 @@ impl From<io::Error> for AMQPError {
 }
 
 impl <T> From<::std::sync::PoisonError<T>> for AMQPError {
-    fn from(err: ::std::sync::PoisonError<T>) -> AMQPError {
+    fn from(_ : ::std::sync::PoisonError<T>) -> AMQPError {
         AMQPError::SyncError
     }
 }
@@ -57,6 +58,12 @@ impl <T> From<::std::sync::PoisonError<T>> for AMQPError {
 impl From<url::ParseError> for AMQPError {
     fn from(err: url::ParseError) -> AMQPError {
         AMQPError::UrlParseError(err)
+    }
+}
+
+impl From<amq_proto::Error> for AMQPError {
+    fn from(err: amq_proto::Error) -> AMQPError {
+        AMQPError::Protocol(format!("{}", err))
     }
 }
 

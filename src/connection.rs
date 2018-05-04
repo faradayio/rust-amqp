@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use native_tls::{TlsConnector, TlsStream};
 
 use amqp_error::AMQPResult;
-use framing::{Frame, FrameType};
+use amq_proto::{Frame, FrameType, FramePayload};
 
 enum AMQPStream {
     Cleartext(TcpStream),
@@ -67,13 +67,15 @@ impl Connection {
             FrameType::BODY => {
                 // TODO: Check if need to include frame header + end octet into calculation. (9
                 // bytes extra)
-                for content_frame in split_content_into_frames(frame.payload,
+                let frame_type = frame.frame_type;
+                let channel = frame.channel;
+                for content_frame in split_content_into_frames(frame.payload.into_inner(),
                                                                self.frame_max_limit)
                     .into_iter() {
                     try!(self.write_frame(Frame {
-                        frame_type: frame.frame_type,
-                        channel: frame.channel,
-                        payload: content_frame,
+                        frame_type: frame_type,
+                        channel: channel,
+                        payload: FramePayload::new(content_frame),
                     }))
                 }
                 Ok(())
@@ -84,11 +86,11 @@ impl Connection {
 
     pub fn read(&mut self) -> AMQPResult<Frame> {
         match self.socket {
-            AMQPStream::Cleartext(ref mut stream) => Frame::decode(stream),
+            AMQPStream::Cleartext(ref mut stream) => Frame::decode(stream).map_err(From::from),
             #[cfg(feature = "tls")]
             AMQPStream::Tls(ref mut stream) => {
                 let mut stream_guard = try!(stream.lock());
-                Frame::decode(stream_guard.get_mut())
+                Frame::decode(stream_guard.get_mut()).map_err(From::from)
             }
         }
     }

@@ -1,9 +1,8 @@
 use channel;
 use connection::Connection;
 use protocol;
-use table::Table;
-use table::TableEntry::{FieldTable, Bool, LongString};
-use framing::{Frame, MethodFrame};
+use amq_proto::{self, Table, Method, Frame, MethodFrame};
+use amq_proto::TableEntry::{FieldTable, Bool, LongString};
 
 use amqp_error::{AMQPResult, AMQPError};
 use super::VERSION;
@@ -11,7 +10,8 @@ use super::VERSION;
 use std::sync::{Arc, Mutex};
 use std::default::Default;
 use std::collections::HashMap;
-use std::sync::mpsc::{SyncSender, sync_channel};
+
+use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
 use std::thread;
 use std::cmp;
 
@@ -41,6 +41,7 @@ pub struct Options {
     pub channel_max_limit: u16,
     pub locale: String,
     pub scheme: AMQPScheme,
+    pub properties: Table,
 }
 
 impl Default for Options {
@@ -48,13 +49,14 @@ impl Default for Options {
         Options {
             host: "127.0.0.1".to_string(),
             port: AMQP_PORT,
-            vhost: "".to_string(),
+            vhost: "/".to_string(),
             login: "guest".to_string(),
             password: "guest".to_string(),
             frame_max_limit: 131072,
             channel_max_limit: 65535,
             locale: "en_US".to_string(),
             scheme: AMQPScheme::AMQP,
+            properties: Table::new(),
         }
     }
 }
@@ -116,7 +118,7 @@ impl Session {
         let frame = try!(self.channel_zero.read()); //Start
         let method_frame = try!(MethodFrame::decode(&frame));
         let start: protocol::connection::Start = match method_frame.method_name() {
-            "connection.start" => try!(protocol::Method::decode(method_frame)),
+            "connection.start" => try!(Method::decode(method_frame)),
             meth => return Err(AMQPError::Protocol(format!("Unexpected method frame: {:?}", meth))),
         };
         debug!("Received connection.start: {:?}", start);
@@ -144,6 +146,7 @@ impl Session {
         client_properties.insert("version".to_owned(), LongString(VERSION.to_owned()));
         client_properties.insert("information".to_owned(),
                                  LongString("https://github.com/Antti/rust-amqp".to_owned()));
+        client_properties.extend(options.properties);
 
         debug!("Sending connection.start-ok");
         let start_ok = protocol::connection::StartOk {
@@ -154,10 +157,10 @@ impl Session {
         };
         let response = try!(self.channel_zero.raw_rpc(&start_ok));
         let tune: protocol::connection::Tune = match response.method_name() {
-            "connection.tune" => try!(protocol::Method::decode(response)),
+            "connection.tune" => try!(amq_proto::Method::decode(response)),
             "connection.close" => {
                 let close_frame: protocol::connection::Close =
-                    try!(protocol::Method::decode(response));
+                    try!(amq_proto::Method::decode(response));
                 return Err(AMQPError::Protocol(format!("Connection was closed: {:?}",
                                                        close_frame)));
             }
@@ -256,15 +259,35 @@ impl Session {
                     let chans = channels.lock().unwrap();
                     let chan_id = frame.channel;
                     let target = chans.get(&chan_id);
-                    let dispatch = match target {
+
+                    match target {
                         Some(target_channel) => {
-                            target_channel.send(Ok(frame)).map_err(|_| {
-                                format!("Error dispatching packet to channel {}", chan_id)
-                            })
-                        }
-                        None => Err(format!("Received frame for an unknown channel: {}", chan_id)),
-                    };
-                    dispatch.map_err(|e| error!("{}", e)).ok();
+                            match target_channel.try_send(Ok(frame)) {
+                                Ok(()) => {},
+                                Err(TrySendError::Disconnected(_frame)) => {
+                                    warn!(
+                                        "Error dispatching packet to channel {}: Receiver is gone.",
+                                        &chan_id
+                                    );
+                                },
+                                Err(TrySendError::Full(frame)) => {
+                                    warn!(
+                                        "Error dispatching packet to channel {}: Full! Blocking until there is space.",
+                                        &chan_id
+                                    );
+
+                                    if let Err(err) = target_channel.send(frame) {
+                                        warn!(
+                                            "Error dispatching packet to channel {}, Even after waiting for a blocked write: {:?}",
+                                            &chan_id,
+                                            err
+                                        );
+                                    }
+                                }
+                            }
+                        },
+                        None => error!("Received frame for an unknown channel: {}", chan_id),
+                    }
                 }
                 Err(read_err) => {
                     error!("Error in reading loop: {:?}", read_err);
@@ -299,13 +322,6 @@ fn percent_decode(string: &str) -> String {
 }
 
 fn parse_url(url_string: &str) -> AMQPResult<Options> {
-    fn clean_vhost(vhost: &str) -> &str {
-        match vhost.chars().next() {
-            Some('/') => &vhost[1..],
-            _ => vhost
-        }
-    }
-
     let default: Options = Default::default();
 
     let url = try!(Url::parse(url_string));
@@ -313,13 +329,7 @@ fn parse_url(url_string: &str) -> AMQPResult<Options> {
         return Err(AMQPError::SchemeError("Must have relative scheme".to_string()));
     }
 
-    let vhost = clean_vhost(url.path());
-    let host = url.domain().map(|s| s.to_string()).unwrap_or(default.host);
-    let login = match url.username() {
-        "" => String::from(default.login),
-        username => username.to_string()
-    };
-    let password = url.password().map_or(String::from(default.password), ToString::to_string);
+    let host = url.host().map(|s| s.to_string()).unwrap_or(default.host);
     let (scheme, default_port) = match url.scheme() {
         "amqp" => (AMQPScheme::AMQP, AMQP_PORT),
         #[cfg(feature = "tls")]
@@ -330,6 +340,19 @@ fn parse_url(url_string: &str) -> AMQPResult<Options> {
     };
     let port = url.port().unwrap_or(default_port);
 
+    let path = url.path();
+    let vhost = if path.len() == 1 && !url_string.ends_with("/") {
+        &default.vhost
+    } else {
+        &path[1..]
+    };
+
+    let login = match url.username() {
+        "" => String::from(default.login),
+        username => username.to_string()
+    };
+    let password = url.password().map_or(String::from(default.password), ToString::to_string);
+
     Ok(Options {
         host: host.to_string(),
         port: port,
@@ -337,7 +360,7 @@ fn parse_url(url_string: &str) -> AMQPResult<Options> {
         login: login,
         password: password,
         vhost: vhost.to_string(),
-        ..Default::default()
+        ..default
     })
 }
 
@@ -357,10 +380,21 @@ mod test {
     }
 
     #[test]
+    fn test_full_parse_url_with_ip() {
+        let options = parse_url("amqp://username:password@123.123.123.123:12345/vhost").expect("Failed parsing url");
+        assert_eq!(options.host, "123.123.123.123");
+        assert_eq!(options.login, "username");
+        assert_eq!(options.password, "password");
+        assert_eq!(options.port, 12345);
+        assert_eq!(options.vhost, "vhost");
+        assert!(match options.scheme { AMQPScheme::AMQP => true, _ => false });
+    }
+
+    #[test]
     fn test_full_parse_url_without_vhost() {
         let options = parse_url("amqp://host").expect("Failed parsing url");
         assert_eq!(options.host, "host");
-        assert_eq!(options.vhost, "");
+        assert_eq!(options.vhost, "/");
     }
 
     #[test]

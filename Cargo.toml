@@ -1,8 +1,8 @@
 [package]
 
 name = "amqp"
-version = "0.0.19"
-authors = ["Andrii Dmytrenko <andrey@reevoo.com>"]
+version = "0.1.1"
+authors = ["Andrii Dmytrenko <refresh.xss@gmail.com>"]
 description = "AMQP/RabbitMQ protocol client"
 repository = "https://github.com/Antti/rust-amqp"
 license = "MIT/Apache-2.0"
@@ -19,12 +19,10 @@ tls = ["native-tls"]
 default = ["tls"]
 
 [dependencies]
-bit-vec = "0.4"
-byteorder = "0.5"
-enum_primitive = "0.1"
 env_logger = "0.3"
 log = "0.3"
 url = "1.2"
+amq-proto = "0.1.0"
 
 [dependencies.native-tls]
 version = "0.1.0"
