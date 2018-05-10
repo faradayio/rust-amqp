@@ -92,6 +92,7 @@ impl Channel {
                 .and_then(|frame| frame));
             unprocessed_frame = try!(self.try_consume(frame));
         }
+        // This unwrap is safe because we've checked for `None`.
         Ok(unprocessed_frame.unwrap())
     }
 
@@ -291,7 +292,8 @@ impl Channel {
                 }
             }
             _ => {
-                debug!("Passing on unknown frame {:?}", frame);
+                debug!("Not a method frame, passing up a layer: {:?}", frame);
+
                 // Pass on all other types of frames
                 Ok(Some(frame))
             }
