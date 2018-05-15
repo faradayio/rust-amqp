@@ -102,7 +102,11 @@ impl Session {
         try!(channels.lock().map_err(|_| AMQPError::SyncError)).insert(0, channel_zero_sender);
         let con1 = connection.clone();
         let channels_clone = channels.clone();
+
+        // This runs in its own thread, but if it fails, it should notify all
+        // the channel threads so they can shut down.
         thread::spawn(|| Session::reading_loop(con1, channels_clone));
+
         let mut session = Session {
             connection: connection,
             channels: channels,
@@ -294,8 +298,8 @@ impl Session {
                     let chans = channels.lock().unwrap();
                     for chan in chans.values() {
                         // Propagate error to every channel, so they can close
-                        if chan.send(Err(read_err.clone())).is_err() {
-                            error!("Error dispatching closing packet to a channel");
+                        if let Err(err) = chan.send(Err(read_err.clone())) {
+                            error!("Error dispatching closing packet to a channel: {}", err);
                         }
                     }
                     break;

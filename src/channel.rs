@@ -245,12 +245,12 @@ impl Channel {
 
     // Will run the infinite loop, which will receive frames on the given channel &
     // call consumers.
-    pub fn start_consuming(&mut self) {
+    pub fn start_consuming(&mut self) -> AMQPResult<()> {
         loop {
             match self.read() {
                 Err(err) => {
                     error!("Error consuming {:?}", err);
-                    return;
+                    return Err(err);
                 }
                 Ok(frame) => {
                     debug!("Discarding frame {:?}", frame);
