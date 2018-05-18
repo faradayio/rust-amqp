@@ -11,23 +11,24 @@ readme = "Readme.md"
 # build = "build.rs"
 
 [lib]
-
 name = "amqp"
 
 [features]
-tls = ["native-tls"]
+tls = ["openssl", "tokio-openssl"]
 default = ["tls"]
 
 [dependencies]
-env_logger = "0.3"
-log = "0.3"
-url = "1.2"
 #amq-proto = "0.1.0"
 amq-proto = { git = "https://github.com/faradayio/rust-amq-proto" }
-
-[dependencies.native-tls]
-version = "0.1.0"
-optional = true
+bytes = "0.4"
+futures = "0.1"
+log = "0.3"
+openssl = { version = "0.10", optional = true }
+tokio = "0.1"
+tokio-io = "0.1"
+tokio-openssl = { version = "0.2", optional = true }
+url = "1.2"
 
 [dev-dependencies]
 # clippy  = "*"
+env_logger = "0.3"

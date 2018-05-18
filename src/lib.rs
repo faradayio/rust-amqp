@@ -80,15 +80,20 @@
 #![cfg_attr(feature="clippy", feature(plugin))]
 #![cfg_attr(feature="clippy", plugin(clippy))]
 
-extern crate url;
-
-#[cfg(feature = "tls")]
-extern crate native_tls;
-
+extern crate amq_proto;
+extern crate bytes;
+extern crate futures;
 #[macro_use]
 extern crate log;
-extern crate amq_proto;
+#[cfg(feature = "tls")]
+extern crate openssl;
+extern crate tokio;
+extern crate tokio_io;
+#[cfg(feature = "tls")]
+extern crate tokio_openssl;
+extern crate url;
 
+mod codec;
 mod connection;
 mod channel;
 mod session;

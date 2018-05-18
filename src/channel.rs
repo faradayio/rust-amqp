@@ -9,7 +9,7 @@ use protocol::{channel, basic};
 use protocol::basic::BasicProperties;
 use protocol::basic::{Consume, ConsumeOk, Deliver, Publish, Ack, Nack, Reject, Qos, QosOk, Cancel,
                       CancelOk};
-use connection::Connection;
+use connection::WriteConnection;
 use std::collections::HashMap;
 use std::cell::RefCell;
 use std::fmt::Debug;
@@ -51,13 +51,13 @@ pub struct Channel {
     pub id: u16,
     consumers: Rc<RefCell<HashMap<String, Box<Consumer>>>>,
     receiver: Receiver<AMQPResult<Frame>>,
-    connection: Connection,
+    connection: WriteConnection,
 }
 
 unsafe impl Send for Channel {}
 
 impl Channel {
-    pub fn new(id: u16, receiver: Receiver<AMQPResult<Frame>>, connection: Connection) -> Channel {
+    pub fn new(id: u16, receiver: Receiver<AMQPResult<Frame>>, connection: WriteConnection) -> Channel {
         Channel {
             id: id,
             receiver: receiver,
@@ -240,7 +240,7 @@ impl Channel {
     }
 
     pub fn set_frame_max_limit(&mut self, size: u32) {
-        self.connection.frame_max_limit = size;
+        self.connection.set_frame_max_limit(size);
     }
 
     // Will run the infinite loop, which will receive frames on the given channel &

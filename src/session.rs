@@ -1,5 +1,5 @@
 use channel;
-use connection::Connection;
+use connection::{Connection, ReadConnection, WriteConnection};
 use protocol;
 use amq_proto::{self, Table, Method, Frame, MethodFrame};
 use amq_proto::TableEntry::{FieldTable, Bool, LongString};
@@ -62,7 +62,8 @@ impl Default for Options {
 }
 
 pub struct Session {
-    connection: Connection,
+    /// We keep this here so we can clone it into newly-created channels.
+    write_connection: WriteConnection,
     channels: Arc<Mutex<HashMap<u16, SyncSender<AMQPResult<Frame>>>>>,
     channel_max_limit: u16,
     channel_zero: channel::Channel,
@@ -96,22 +97,22 @@ impl Session {
     /// ```
     pub fn new(options: Options) -> AMQPResult<Session> {
         let connection = try!(get_connection(&options));
+        let (read_connection, write_connection) = connection.split();
         let channels = Arc::new(Mutex::new(HashMap::new()));
         let (channel_zero_sender, channel_receiver) = sync_channel(CHANNEL_BUFFER_SIZE); //channel0
-        let channel_zero = channel::Channel::new(0, channel_receiver, connection.clone());
+        let channel_zero = channel::Channel::new(0, channel_receiver, write_connection.clone());
         try!(channels.lock().map_err(|_| AMQPError::SyncError)).insert(0, channel_zero_sender);
-        let con1 = connection.clone();
         let channels_clone = channels.clone();
 
         // This runs in its own thread, but if it fails, it should notify all
         // the channel threads so they can shut down.
-        thread::spawn(|| Session::reading_loop(con1, channels_clone));
+        thread::spawn(|| Session::reading_loop(read_connection, channels_clone));
 
         let mut session = Session {
-            connection: connection,
-            channels: channels,
+            write_connection,
+            channels,
             channel_max_limit: 65535,
-            channel_zero: channel_zero,
+            channel_zero,
         };
         try!(session.init(options));
         Ok(session)
@@ -175,9 +176,9 @@ impl Session {
         debug!("Received tune request: {:?}", tune);
 
         self.channel_max_limit = negotiate(tune.channel_max, self.channel_max_limit);
-        self.connection.frame_max_limit = negotiate(tune.frame_max, options.frame_max_limit);
-        self.channel_zero.set_frame_max_limit(self.connection.frame_max_limit);
-        let frame_max_limit = self.connection.frame_max_limit;
+        self.write_connection.set_frame_max_limit(negotiate(tune.frame_max, options.frame_max_limit));
+        self.channel_zero.set_frame_max_limit(self.write_connection.frame_max_limit());
+        let frame_max_limit = self.write_connection.frame_max_limit();
         let tune_ok = protocol::connection::TuneOk {
             channel_max: self.channel_max_limit,
             frame_max: frame_max_limit,
@@ -223,7 +224,7 @@ impl Session {
     pub fn open_channel(&mut self, channel_id: u16) -> AMQPResult<channel::Channel> {
         debug!("Openning channel: {}", channel_id);
         let (sender, receiver) = sync_channel(CHANNEL_BUFFER_SIZE);
-        let mut channel = channel::Channel::new(channel_id, receiver, self.connection.clone());
+        let mut channel = channel::Channel::new(channel_id, receiver, self.write_connection.clone());
         try!(self.channels.lock().map_err(|_| AMQPError::SyncError)).insert(channel_id, sender);
         try!(channel.open());
         Ok(channel)
@@ -250,7 +251,7 @@ impl Session {
 
     // Receives and dispatches frames from the connection to the corresponding
     // channels.
-    fn reading_loop(mut connection: Connection,
+    fn reading_loop(mut connection: ReadConnection,
                     channels: Arc<Mutex<HashMap<u16, SyncSender<AMQPResult<Frame>>>>>)
                     -> () {
         debug!("Starting reading loop");
