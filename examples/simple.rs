@@ -13,7 +13,7 @@ fn consumer_function(channel: &mut Channel, deliver: protocol::basic::Deliver, h
     println!("Deliver info: {:?}", deliver);
     println!("Content headers: {:?}", headers);
     println!("Content body: {:?}", body);
-    channel.basic_ack(deliver.delivery_tag, false);
+    channel.basic_ack(deliver.delivery_tag, false).unwrap();
 }
 
 fn main() {
@@ -43,7 +43,7 @@ fn main() {
     println!("Starting consumer {:?}", consumer_name);
 
     let consumers_thread = thread::spawn(move || {
-        channel.start_consuming();
+        channel.start_consuming().unwrap();
         channel
     });
 
@@ -52,7 +52,8 @@ fn main() {
 
     channel.basic_publish("", queue_name, true, false,
         protocol::basic::BasicProperties{ content_type: Some("text".to_string()), ..Default::default()},
-        (b"Hello from rust!").to_vec());
-    channel.close(200, "Bye");
+        (b"Hello from rust!").to_vec())
+        .unwrap();
+    channel.close(200, "Bye").unwrap();
     session.close(200, "Good Bye");
 }
