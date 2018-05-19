@@ -34,6 +34,6 @@ fn main() {
     }
 
     println!("Queue is now empty, quitting...");
-    channel.close(200, "Bye");
+    channel.close(200, "Bye").unwrap();
     session.close(200, "Good Bye");
 }

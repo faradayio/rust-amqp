@@ -17,8 +17,8 @@ static mut STOP_LOOP : bool = false;
 
 fn main() {
     env_logger::init().unwrap();
-    let mut session = Session::new(Options{vhost: "/".to_string(), .. Default::default()}).ok().expect("Can't create session");
-    let mut channel = session.open_channel(1).ok().expect("Can't open channel");
+    let mut session = Session::new(Options{vhost: "/".to_string(), .. Default::default()}).expect("Can't create session");
+    let mut channel = session.open_channel(1).expect("Can't open channel");
     println!("Openned channel: {:?}", channel.id);
 
     let queue_name = "test_queue";
@@ -38,7 +38,7 @@ fn main() {
         let properties = protocol::basic::BasicProperties { content_type: Some("text".to_owned()), headers: Some(headers), ..Default::default() };
         channel.basic_publish("", queue_name, true, false,
             properties,
-            (b"Hello from rust!").to_vec()).ok().expect("Failed publishing");
+            (b"Hello from rust!").to_vec()).expect("Failed publishing");
         unsafe {
             if STOP_LOOP {
                 break;
@@ -46,6 +46,6 @@ fn main() {
         }
     }
     println!("Stopping producer");
-    channel.close(200, "Bye");
+    channel.close(200, "Bye").unwrap();
     session.close(200, "Good Bye");
 }

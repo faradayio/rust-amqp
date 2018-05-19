@@ -71,7 +71,7 @@ fn main() {
     let consumer_name = channel.basic_consume(closure_consumer, queue_name, "", false, false, false, false, Table::new());
     println!("Starting consumer {:?}", consumer_name);
 
-    channel.start_consuming();
+    channel.start_consuming().unwrap();
 
     channel.close(200, "Bye").unwrap();
     session.close(200, "Good Bye");
