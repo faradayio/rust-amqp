@@ -9,6 +9,9 @@ use amqp_error::AMQPError;
 /// The number of bytes in an AMQP frame header.
 const HEADER_LEN: usize = 7;
 
+/// The number of trailing bytes after an AMQP payload.
+const END_LEN: usize = 1;
+
 /// Encode or decode an AMQP `Frame` object. This is used with Tokio's `framed`
 /// method to turn an `AsyncRead + AsyncWrite` into a `Stream + Sync` operating
 /// on `Frame`s.
@@ -44,7 +47,7 @@ impl Decoder for FramesCodec {
         let mut header_bytes = [0; HEADER_LEN];
         header_bytes.clone_from_slice(&buf[..HEADER_LEN]);
         let FrameHeader { payload_size, .. } = FrameHeader::new(header_bytes);
-        let frame_len = HEADER_LEN + payload_size as usize;
+        let frame_len = HEADER_LEN + payload_size as usize + END_LEN;
         if buf.len() < frame_len {
             trace!(
                 "Need {} bytes for frame, have {} so far",
@@ -55,12 +58,22 @@ impl Decoder for FramesCodec {
         }
 
         // Parse our frame.
-        let mut to_decode = &buf[..frame_len];
+        let to_decode = buf.split_to(frame_len);
+        let mut to_decode = &to_decode[..];
+        trace!("Attempting to decode {} byte frame", to_decode.len());
         let frame = Frame::decode(&mut to_decode)?;
         assert!(to_decode.is_empty());
 
         trace!("Decoded frame: {:?}", frame);
         Ok(Some(frame))
+    }
+
+    fn decode_eof(
+        &mut self,
+        buf: &mut BytesMut,
+    ) -> Result<Option<Frame>, AMQPError> {
+        trace!("Frame decoder sees end of file");
+        self.decode(buf)
     }
 }
 

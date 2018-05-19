@@ -95,9 +95,10 @@ impl Connection {
 
         // Copy inbound frames from `stream` to `read_sender`.
         let reader = stream
-            .from_err::<AMQPError>()
+            //.inspect(|frame| trace!("seen on stream: {:?}", frame))
+            //.inspect_err(|err| trace!("seen on stream: {:?}", err))
             .forward(read_sender)
-            .map(|_| { debug!("reader done") })
+            .map(|(_stream, _sink)| { debug!("reader done") })
             .map_err(|e| { error!("reader failed: {}", e) });
 
         // Set up our `WriteConnection`.
@@ -157,8 +158,14 @@ impl ReadConnection {
                 self.receiver = Some(rest);
                 Ok(frame)
             }
-            Ok((None, _rest)) => Err(AMQPError::MpscReceiveError),
-            Err(((), _rest)) => Err(AMQPError::MpscReceiveError),
+            Ok((None, _rest)) => {
+                trace!("end of mpsc read stream");
+                Err(AMQPError::MpscReceiveError)
+            },
+            Err(((), _rest)) => {
+                trace!("error on mpsc read stream");
+                Err(AMQPError::MpscReceiveError)
+            }
         }
     }
 }
