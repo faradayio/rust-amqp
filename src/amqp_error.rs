@@ -11,8 +11,8 @@ pub enum AMQPError {
     DecodeError(&'static str),
     FramingError(String),
     IoError(io::ErrorKind),
-    MpscReceiveError,
-    MpscSendError,
+    MpscReadChannelClosed,
+    MpscWriteChannelClosed,
     Protocol(String),
     QueueEmpty,
     SchemeError(String),
@@ -40,10 +40,10 @@ impl fmt::Display for AMQPError {
             AMQPError::IoError(err) => {
                 write!(f, "I/O error: {:?}", err)
             }
-            AMQPError::MpscReceiveError => {
+            AMQPError::MpscReadChannelClosed => {
                 write!(f, "tried to receive from closed channel")
             }
-            AMQPError::MpscSendError => {
+            AMQPError::MpscWriteChannelClosed => {
                 write!(f, "tried to write to closed channel")
             }
             AMQPError::Protocol(ref err) => {
@@ -77,8 +77,8 @@ impl error::Error for AMQPError {
             AMQPError::DecodeError(err) => err,
             AMQPError::FramingError(ref err) => err,
             AMQPError::IoError(_) => "I/O error",
-            AMQPError::MpscReceiveError => "tried to read from closed channel",
-            AMQPError::MpscSendError => "tried to write to closed channel",
+            AMQPError::MpscReadChannelClosed => "tried to read from closed channel",
+            AMQPError::MpscWriteChannelClosed => "tried to write to closed channel",
             AMQPError::Protocol(ref err) => err,
             AMQPError::QueueEmpty => "queue is empty",
             AMQPError::SchemeError(ref err) => err,
@@ -125,6 +125,6 @@ impl From<openssl::ssl::Error> for AMQPError {
 
 impl<T> From<mpsc::SendError<T>> for AMQPError {
     fn from(_err: mpsc::SendError<T>) -> AMQPError {
-        AMQPError::MpscSendError
+        AMQPError::MpscWriteChannelClosed
     }
 }

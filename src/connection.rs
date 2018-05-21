@@ -3,6 +3,7 @@ use futures::{Future, Sink, Stream, sync::mpsc};
 use openssl::ssl::{SslConnector, SslMethod};
 use std::cmp;
 use std::thread;
+use std::time::Duration;
 use std::net::{SocketAddr, ToSocketAddrs};
 use tokio;
 use tokio::io;
@@ -15,6 +16,10 @@ use codec::FramesCodec;
 
 /// Bytes to send after creating a connection to an AMQP server.
 const AMQP_INIT: &'static [u8] = &[b'A', b'M', b'Q', b'P', 0, 0, 9, 1];
+
+/// How often should we send a TCP keepalive probe to see if the connection is
+/// alive?
+const KEEPALIVE_SECS: u64 = 120;
 
 /// A connection to an AMQP server.
 pub struct Connection {
@@ -39,6 +44,10 @@ impl Connection {
         let addr = socket_addr(host, port)?;
         TcpStream::connect(&addr)
             .from_err::<AMQPError>()
+            .and_then(|tcp| {
+                tcp.set_keepalive(Some(Duration::from_secs(KEEPALIVE_SECS)))?;
+                Ok(tcp)
+            })
             .and_then(|tcp| {
                 SslConnector::builder(SslMethod::tls())
                     .expect("could not create builder")
@@ -67,6 +76,10 @@ impl Connection {
         TcpStream::connect(&addr)
             .from_err::<AMQPError>()
             .and_then(|tcp| {
+                tcp.set_keepalive(Some(Duration::from_secs(KEEPALIVE_SECS)))?;
+                Ok(tcp)
+            })
+            .and_then(|tcp| {
                 io::write_all(tcp, AMQP_INIT).from_err::<AMQPError>()
             })
             .wait()
@@ -89,17 +102,19 @@ impl Connection {
 
         // Set up our `ReadConnection`.
         let (read_sender, read_receiver) = mpsc::channel(0);
+        let read_error_sender = read_sender.clone();
         let read_conn = ReadConnection {
             receiver: Some(read_receiver),
         };
 
         // Copy inbound frames from `stream` to `read_sender`.
         let reader = stream
-            //.inspect(|frame| trace!("seen on stream: {:?}", frame))
-            //.inspect_err(|err| trace!("seen on stream: {:?}", err))
+            .inspect(|frame| trace!("seen on stream: {:?}", frame))
+            .inspect_err(|err| trace!("seen on stream: {:?}", err))
+            .map(Ok)
             .forward(read_sender)
-            .map(|(_stream, _sink)| { debug!("reader done") })
-            .map_err(|e| { error!("reader failed: {}", e) });
+            .map_err(|e| { error!("reader failed: {}", e); e })
+            .map(|(_stream, _sink)| { trace!("reader done") });
 
         // Set up our `WriteConnection`.
         let (write_sender, write_receiver) = mpsc::channel(0);
@@ -110,17 +125,36 @@ impl Connection {
 
         // Copy outbound frames from `write_receiver` to `sink`.
         let writer = write_receiver
-            .map_err(|_| AMQPError::MpscReceiveError)
+            .map_err(|_| AMQPError::MpscReadChannelClosed)
             .forward(sink)
-            .map(|_| { debug!("writer done") })
-            .map_err(|e| { error!("writer failed: {}", e) });
+            .map_err(|e| { error!("writer failed: {}", e); e })
+            .map(|_| { trace!("writer done") });
 
-        // TODO: Figure out background error handling.
-        // TODO: Figure out shutdown.
+        // Create a final handler to manage stream shutdown.
+        let read_and_write_then_cleanup = reader
+            // Create a future which waits for either our reader or writer
+            // to finish.
+            .select(writer)
+            // If either the reader or writer encounters a network error,
+            // forward it to our reader, because our writers are effectively
+            // async.
+            .map_err(move |(err, _select_next)| {
+                trace!("Forwarding network I/O error to reader: {}", err);
+                let forward_err = read_error_sender.send(Err(err.clone()))
+                    .map(|_| ())
+                    .map_err(move |_| {
+                        error!(
+                            "Reader shut down before we could notify it about
+                            error: {}",
+                            err,
+                        );
+                    });
+                tokio::spawn(forward_err);
+            });
 
-        // Fire up a background thread to handle our futures.
         thread::spawn(move || {
-            tokio::run(reader.join(writer).map(|_| ()));
+            let _ = read_and_write_then_cleanup.wait();
+            trace!("Background worker finished");
         });
 
         (read_conn, write_conn)
@@ -138,7 +172,7 @@ fn socket_addr(host: &str, port: u16) -> AMQPResult<SocketAddr> {
 
 /// A connection which can read frames from an AMQP server.
 pub struct ReadConnection {
-    receiver: Option<mpsc::Receiver<Frame>>,
+    receiver: Option<mpsc::Receiver<Result<Frame, AMQPError>>>,
 }
 
 impl ReadConnection {
@@ -146,7 +180,7 @@ impl ReadConnection {
     pub fn read(&mut self) -> AMQPResult<Frame> {
         // Take ownership of the `receiver` so we can pass it to `into_future`.
         // This will fail if a previous `read` failed.
-        let receiver = self.receiver.take().ok_or(AMQPError::MpscReceiveError)?;
+        let receiver = self.receiver.take().ok_or(AMQPError::MpscReadChannelClosed)?;
 
         // Use `into_future` to wait for the next item received on our stream.
         // This returns the next value in stream, as well as `rest`, which
@@ -154,17 +188,17 @@ impl ReadConnection {
         match receiver.into_future().wait() {
             // We received a value normally, so replace `self.receiver` with
             // our new `receiver`
-            Ok((Some(frame), rest)) => {
+            Ok((Some(frame_or_err), rest)) => {
                 self.receiver = Some(rest);
-                Ok(frame)
+                frame_or_err
             }
             Ok((None, _rest)) => {
                 trace!("end of mpsc read stream");
-                Err(AMQPError::MpscReceiveError)
+                Err(AMQPError::MpscReadChannelClosed)
             },
             Err(((), _rest)) => {
                 trace!("error on mpsc read stream");
-                Err(AMQPError::MpscReceiveError)
+                Err(AMQPError::MpscReadChannelClosed)
             }
         }
     }
@@ -216,7 +250,8 @@ impl WriteConnection {
     fn write_frame(&mut self, frame: Frame) -> AMQPResult<()> {
         // Take ownership of the `sender` so we can pass it to `send`. This
         // will fail if a previous `send` failed.
-        let sender = self.sender.take().ok_or(AMQPError::MpscReceiveError)?;
+        let sender = self.sender.take()
+            .ok_or(AMQPError::MpscWriteChannelClosed)?;
 
         // Send our message, and wait for the result.
         match sender.send(frame).wait() {
@@ -227,7 +262,7 @@ impl WriteConnection {
             }
             // Our message failed to send, which means the other end of the
             // channel was dropped.
-            Err(_err) => Err(AMQPError::MpscReceiveError),
+            Err(_err) => Err(AMQPError::MpscWriteChannelClosed),
         }
     }
 }
