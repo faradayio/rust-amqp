@@ -40,8 +40,8 @@ fn main() {
         properties: props,
         vhost: "/".to_string(),
         .. Default::default()
-    }).ok().expect("Can't create session");
-    let mut channel = session.open_channel(1).ok().expect("Error openning channel 1");
+    }).expect("Can't create session");
+    let mut channel = session.open_channel(1).expect("Error openning channel 1");
     println!("Openned channel: {:?}", channel.id);
 
     let queue_name = "test_queue";
@@ -49,7 +49,7 @@ fn main() {
     let queue_declare = channel.queue_declare(queue_name, false, true, false, false, false, Table::new());
 
     println!("Queue declare: {:?}", queue_declare);
-    channel.basic_prefetch(10).ok().expect("Failed to prefetch");
+    channel.basic_prefetch(10).expect("Failed to prefetch");
     //consumer, queue: &str, consumer_tag: &str, no_local: bool, no_ack: bool, exclusive: bool, nowait: bool, arguments: Table
     println!("Declaring consumers...");
 

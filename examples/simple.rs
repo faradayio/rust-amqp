@@ -23,7 +23,7 @@ fn main() {
         Ok(session) => session,
         Err(error) => panic!("Can't create session: {:?}", error)
     };
-    let mut channel = session.open_channel(1).ok().expect("Can't open channel");
+    let mut channel = session.open_channel(1).expect("Can't open channel");
     println!("Openned channel: {}", channel.id);
 
     let queue_name = "test_queue";
@@ -48,7 +48,7 @@ fn main() {
     });
 
     // There is currently no way to stop the consumers, so we infinitely join thread.
-    let mut channel = consumers_thread.join().ok().expect("Can't get channel from consumer thread");
+    let mut channel = consumers_thread.join().expect("Can't get channel from consumer thread");
 
     channel.basic_publish("", queue_name, true, false,
         protocol::basic::BasicProperties{ content_type: Some("text".to_string()), ..Default::default()},

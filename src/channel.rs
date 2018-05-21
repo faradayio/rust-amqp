@@ -312,7 +312,7 @@ impl<'a> Basic<'a> for Channel {
     ///     Ok(session) => session,
     ///     Err(error) => panic!("Failed openning an amqp session: {:?}", error)
     /// };
-    /// let mut channel = session.open_channel(1).ok().expect("Can not open a channel");
+    /// let mut channel = session.open_channel(1).expect("Can not open a channel");
     /// for get_result in channel.basic_get("my queue", false) {
     ///     println!("Headers: {:?}", get_result.headers);
     ///     println!("Reply: {:?}", get_result.reply);
