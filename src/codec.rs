@@ -62,7 +62,7 @@ impl Decoder for FramesCodec {
         let mut to_decode = &to_decode[..];
         trace!("Attempting to decode {} byte frame", to_decode.len());
         let frame = Frame::decode(&mut to_decode)?;
-        assert!(to_decode.is_empty());
+        assert!(to_decode.is_empty()); // Make sure no leftover data.
 
         trace!("Decoded frame: {:?}", frame);
         Ok(Some(frame))
@@ -72,6 +72,8 @@ impl Decoder for FramesCodec {
         &mut self,
         buf: &mut BytesMut,
     ) -> Result<Option<Frame>, AMQPError> {
+        // This is the last data we're getting. This is interesting enough to
+        // log.
         trace!("Frame decoder sees end of file");
         self.decode(buf)
     }

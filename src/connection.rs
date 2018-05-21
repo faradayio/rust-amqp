@@ -95,12 +95,15 @@ impl Connection {
     }
 
     /// Split this connection into an independent `(ReadConnection,
-    /// WriteConnection)` pair.
+    /// WriteConnection)` pair. This consumes `self`.
     pub fn split(self) -> (ReadConnection, WriteConnection) {
         // Consume our `self`, and extract our `sink` and `stream`.
         let (sink, stream) = (self.sink, self.stream);
 
-        // Set up our `ReadConnection`.
+        // Set up our `ReadConnection` to return. We create two sender
+        // endpoints, one for sending regular data, and one for sending errors
+        // from a separate sender. We use `mpsc::channel` because we'll be
+        // sending messages to a different thread.
         let (read_sender, read_receiver) = mpsc::channel(0);
         let read_error_sender = read_sender.clone();
         let read_conn = ReadConnection {
@@ -111,12 +114,16 @@ impl Connection {
         let reader = stream
             .inspect(|frame| trace!("seen on stream: {:?}", frame))
             .inspect_err(|err| trace!("seen on stream: {:?}", err))
+            // Wrap in `Ok` before forwarding, because `read_sender` always
+            // sends `Ok`, but `read_error_sender` needs to be able to send
+            // `Err`.
             .map(Ok)
             .forward(read_sender)
             .map_err(|e| { error!("reader failed: {}", e); e })
             .map(|(_stream, _sink)| { trace!("reader done") });
 
-        // Set up our `WriteConnection`.
+        // Set up our `WriteConnection` to return. We use `mpsc::channel`
+        // because we'll be receiving messages to a different thread.
         let (write_sender, write_receiver) = mpsc::channel(0);
         let write_conn = WriteConnection {
             frame_max_limit: 131072,
@@ -142,11 +149,14 @@ impl Connection {
             .map_err(move |(err, _select_next)| {
                 trace!("Forwarding network I/O error to reader: {}", err);
                 let forward_err = read_error_sender.send(Err(err.clone()))
-                    .map(|_| ())
+                    // Deal with success and failure so we can pass to
+                    // `tokio::spawn`.
+                    .map(|_| {})
                     .map_err(move |_| {
-                        error!(
+                        // This is an expected behavior in some cases.
+                        debug!(
                             "Reader shut down before we could notify it about
-                            error: {}",
+                            error (normal): {}",
                             err,
                         );
                     });
