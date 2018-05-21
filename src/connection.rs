@@ -137,7 +137,8 @@ impl Connection {
             .select(writer)
             // If either the reader or writer encounters a network error,
             // forward it to our reader, because our writers are effectively
-            // async.
+            // async. When we drop `_select_next`, we drop whichever half of
+            // our connection (reader or writer) which _didn't_ finish first.
             .map_err(move |(err, _select_next)| {
                 trace!("Forwarding network I/O error to reader: {}", err);
                 let forward_err = read_error_sender.send(Err(err.clone()))
@@ -152,7 +153,11 @@ impl Connection {
                 tokio::spawn(forward_err);
             });
 
+        // I'm not sure that this is the best way to run `tokio` in the
+        // background, because I don't really understand `tokio` executors and thread
+        // pools yet. But it seems to work and to have the semantics I want.
         thread::spawn(move || {
+            // Ignore any errors, because we reported them above.
             let _ = read_and_write_then_cleanup.wait();
             trace!("Background worker finished");
         });
