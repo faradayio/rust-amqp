@@ -43,7 +43,10 @@ impl Connection {
     pub fn open_tls(host: &str, port: u16) -> AMQPResult<Connection> {
         let addr = socket_addr(host, port)?;
         TcpStream::connect(&addr)
+            // Convert errors to `AMQPError` as soon as we see them, so that
+            // we can use the same error type everywhere.
             .from_err::<AMQPError>()
+            // Turn on TCP keepalive, so we can detect dropped connections.
             .and_then(|tcp| {
                 tcp.set_keepalive(Some(Duration::from_secs(KEEPALIVE_SECS)))?;
                 Ok(tcp)
@@ -55,10 +58,13 @@ impl Connection {
                     .connect_async(host, tcp)
                     .from_err::<AMQPError>()
             })
+            // Send `AMQP_INIT` handshake sequence to server.
             .and_then(|tls| {
                 io::write_all(tls, AMQP_INIT).from_err::<AMQPError>()
             })
+            // Wait for the asynchronous tasks above to complete.
             .wait()
+            // Wrap the results up in a `Connection` object.
             .map(|(tls, _written_data)| {
                 // Break into frames and split now, because this is much easier
                 // before we stick this in a `Box` and lose type information.
@@ -74,15 +80,21 @@ impl Connection {
     pub fn open(host: &str, port: u16) -> AMQPResult<Connection> {
         let addr = socket_addr(host, port)?;
         TcpStream::connect(&addr)
+            // Convert errors to `AMQPError` as soon as we see them, so that
+            // we can use the same error type everywhere.
             .from_err::<AMQPError>()
+            // Turn on TCP keepalive, so we can detect dropped connections.
             .and_then(|tcp| {
                 tcp.set_keepalive(Some(Duration::from_secs(KEEPALIVE_SECS)))?;
                 Ok(tcp)
             })
+            // Send `AMQP_INIT` handshake sequence to server.
             .and_then(|tcp| {
                 io::write_all(tcp, AMQP_INIT).from_err::<AMQPError>()
             })
+            // Wait for the asynchronous tasks above to complete.
             .wait()
+            // Wrap the results up in a `Connection` object.
             .map(|(tcp, _written_data)| {
                 // Break into frames and split now, because this is much easier
                 // before we stick this in a `Box` and lose type information.
@@ -96,8 +108,27 @@ impl Connection {
 
     /// Split this connection into an independent `(ReadConnection,
     /// WriteConnection)` pair. This consumes `self`.
+    ///
+    /// ### Plumbing overview
+    ///
+    /// The `ReadConnection` and `WriteConnection` act as our public endpoints,
+    /// and they can be passed between threads. Internally, they use
+    /// `mpsc::Channel`s to forward messages to and from async tokio tasks in
+    /// a background thread.
+    ///
+    /// ```text
+    /// WriteConnection { write_sender }
+    ///     --(send across threads)--> write_receiver
+    ///     --(forward)--> sink (writes frames to network)
+    ///
+    /// stream (reads frames from network)
+    ///     --(forward)--> read_sender
+    ///     --(send across threads)--> ReadConnection { read_receiver }
+    /// ```
     pub fn split(self) -> (ReadConnection, WriteConnection) {
-        // Consume our `self`, and extract our `sink` and `stream`.
+        // Consume our `self`, and extract our `sink` and `stream`. These send
+        // frames to the network, and send us frames which arrive off the
+        // network, respectively.
         let (sink, stream) = (self.sink, self.stream);
 
         // Set up our `ReadConnection` to return. We create two sender
@@ -112,11 +143,11 @@ impl Connection {
 
         // Copy inbound frames from `stream` to `read_sender`.
         let reader = stream
-            .inspect(|frame| trace!("seen on stream: {:?}", frame))
-            .inspect_err(|err| trace!("seen on stream: {:?}", err))
+            // Optional debugging.
+            //.inspect(|frame| trace!("seen on stream: {:?}", frame))
+            //.inspect_err(|err| trace!("seen on stream: {:?}", err))
             // Wrap in `Ok` before forwarding, because `read_sender` always
-            // sends `Ok`, but `read_error_sender` needs to be able to send
-            // `Err`.
+            // sends `Ok`, but `read_error_sender` will send `Err`.
             .map(Ok)
             .forward(read_sender)
             .map_err(|e| { error!("reader failed: {}", e); e })
@@ -144,13 +175,15 @@ impl Connection {
             .select(writer)
             // If either the reader or writer encounters a network error,
             // forward it to our reader, because our writers are effectively
-            // async. When we drop `_select_next`, we drop whichever half of
-            // our connection (reader or writer) which _didn't_ finish first.
+            // async.
+            //
+            // When we drop the `_select_next` variable, we drop whichever half
+            // of our connection (reader or writer) which _didn't_ finish first.
             .map_err(move |(err, _select_next)| {
                 trace!("Forwarding network I/O error to reader: {}", err);
                 let forward_err = read_error_sender.send(Err(err.clone()))
-                    // Deal with success and failure so we can pass to
-                    // `tokio::spawn`.
+                    // Map success and failure to `()` so we can pass this
+                    // future to `tokio::spawn`.
                     .map(|_| {})
                     .map_err(move |_| {
                         // This is an expected behavior in some cases.
@@ -160,6 +193,7 @@ impl Connection {
                             err,
                         );
                     });
+                // Run `forward_err` asynchronously.
                 tokio::spawn(forward_err);
             });
 
@@ -167,11 +201,14 @@ impl Connection {
         // background, because I don't really understand `tokio` executors and thread
         // pools yet. But it seems to work and to have the semantics I want.
         thread::spawn(move || {
-            // Ignore any errors, because we reported them above.
+            // Use `let _ =` to ignore any errors, because we reported them
+            // above.
             let _ = read_and_write_then_cleanup.wait();
             trace!("Background worker finished");
         });
 
+        // Return the read and write endpoints which will be used by other
+        // threads to communicate with us.
         (read_conn, write_conn)
     }
 }
@@ -187,6 +224,8 @@ fn socket_addr(host: &str, port: u16) -> AMQPResult<SocketAddr> {
 
 /// A connection which can read frames from an AMQP server.
 pub struct ReadConnection {
+    /// This is an `mpsc::Receiver` (multiple producer, single consumer) that we
+    /// use to receive frames (and network errors!) from our background thread.
     receiver: Option<mpsc::Receiver<Result<Frame, AMQPError>>>,
 }
 
@@ -221,7 +260,13 @@ impl ReadConnection {
 
 /// A connection which can write frames to an AMQP server.
 pub struct WriteConnection {
+    /// The maximum size of `BODY` frame to send as a single chunk. This is
+    /// stored in `WriteConnection` because that's how the old synchronous
+    /// driver worked.
     frame_max_limit: u32,
+    /// This is an `mpsc::Sender` (multiple producer, single consumer) that we
+    /// use to send frames to our background thread. Network write errors will
+    /// be passed back via our `ReadConnection`.
     sender: Option<mpsc::Sender<Frame>>,
 }
 
